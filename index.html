@@ -24,7 +24,7 @@
             background-color: #2d3748; /* Slightly lighter dark background for the canvas */
             border-radius: 0.75rem; /* Rounded corners for the canvas */
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* Subtle shadow */
-            touch-action: none; /* Disable default browser touch actions for custom panning */
+            touch-action: none; /* Disable default browser touch actions for custom panning and zooming */
         }
         /* Hide spin buttons for number inputs for a cleaner look */
         input[type="number"]::-webkit-inner-spin-button,
@@ -133,6 +133,11 @@
         // Variables for mouse interaction (panning)
         let isDragging = false;
         let lastMouseX, lastMouseY;
+
+        // Variables for touch interaction (panning and zooming)
+        let initialPinchDistance = null;
+        let lastTouchX = null;
+        let lastTouchY = null;
 
         /**
          * Reads the current values of the constants from the input fields.
@@ -407,15 +412,14 @@
             setConstants({ a: 1, h: 0, b: 1, g: 0, f: 0, c: 0 }, 0.5); // x^2 + y^2 = 0 (only at origin)
         });
 
-        // Mouse down event for panning
+        // --- Mouse Events ---
         canvas.addEventListener('mousedown', (e) => {
             isDragging = true;
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
-            canvas.style.cursor = 'grabbing'; // Change cursor to indicate dragging
+            canvas.style.cursor = 'grabbing';
         });
 
-        // Mouse move event for panning
         canvas.addEventListener('mousemove', (e) => {
             if (isDragging) {
                 const dx = e.clientX - lastMouseX;
@@ -424,28 +428,26 @@
                 view.offsetY += dy;
                 lastMouseX = e.clientX;
                 lastMouseY = e.clientY;
-                drawGraph(); // Redraw graph as view changes
+                drawGraph();
             }
         });
 
-        // Mouse up/leave events to stop panning
         canvas.addEventListener('mouseup', () => {
             isDragging = false;
-            canvas.style.cursor = 'grab'; // Change cursor back
-        });
-        canvas.addEventListener('mouseleave', () => {
-            isDragging = false;
-            canvas.style.cursor = 'grab'; // Change cursor back
+            canvas.style.cursor = 'grab';
         });
 
-        // Mouse wheel event for zooming
+        canvas.addEventListener('mouseleave', () => {
+            isDragging = false;
+            canvas.style.cursor = 'grab';
+        });
+
         canvas.addEventListener('wheel', (e) => {
-            e.preventDefault(); // Prevent page scrolling
-            const zoomFactor = 1.1; // How much to zoom in/out
+            e.preventDefault();
+            const zoomFactor = 1.1;
             const mouseX = e.clientX - canvas.getBoundingClientRect().left;
             const mouseY = e.clientY - canvas.getBoundingClientRect().top;
 
-            // Calculate mathematical coordinates of the mouse before zoom
             const { x: mouseGraphX, y: mouseGraphY } = transformPoint(mouseX, mouseY);
 
             if (e.deltaY < 0) { // Zoom in
@@ -454,13 +456,83 @@
                 view.scale /= zoomFactor;
             }
 
-            // Recalculate offsets to zoom around the mouse cursor
             const { px: newMousePx, py: newMousePy } = untransformPoint(mouseGraphX, mouseGraphY);
             view.offsetX += (mouseX - newMousePx);
             view.offsetY += (mouseY - newMousePy);
 
-            drawGraph(); // Redraw graph with new zoom level
+            drawGraph();
         });
+
+        // --- Touch Events for Mobile Panning and Pinch-to-Zoom ---
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent default touch actions like scrolling/native zoom
+            if (e.touches.length === 1) {
+                // Single touch for panning
+                isDragging = true;
+                lastTouchX = e.touches[0].clientX;
+                lastTouchY = e.touches[0].clientY;
+            } else if (e.touches.length === 2) {
+                // Two touches for pinch-to-zoom
+                isDragging = false; // Disable panning if pinching
+                initialPinchDistance = getPinchDistance(e.touches);
+                // Store initial center point for zooming around
+                const touchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                const touchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                lastTouchX = touchCenterX;
+                lastTouchY = touchCenterY;
+            }
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault(); // Prevent default touch actions
+            if (e.touches.length === 1 && isDragging) {
+                // Pan with single touch
+                const dx = e.touches[0].clientX - lastTouchX;
+                const dy = e.touches[0].clientY - lastTouchY;
+                view.offsetX += dx;
+                view.offsetY += dy;
+                lastTouchX = e.touches[0].clientX;
+                lastTouchY = e.touches[0].clientY;
+                drawGraph();
+            } else if (e.touches.length === 2 && initialPinchDistance !== null) {
+                // Pinch-to-zoom with two touches
+                const currentPinchDistance = getPinchDistance(e.touches);
+                if (currentPinchDistance === 0) return; // Avoid division by zero
+
+                const zoomFactor = currentPinchDistance / initialPinchDistance;
+                const oldScale = view.scale;
+                view.scale *= zoomFactor;
+
+                // Calculate the center of the pinch gesture in canvas coordinates
+                const touchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - canvas.getBoundingClientRect().left;
+                const touchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - canvas.getBoundingClientRect().top;
+
+                // Adjust offsets to zoom around the pinch center
+                view.offsetX = touchCenterX - (touchCenterX - view.offsetX) * (view.scale / oldScale);
+                view.offsetY = touchCenterY - (touchCenterY - view.offsetY) * (view.scale / oldScale);
+
+                initialPinchDistance = currentPinchDistance; // Update for next move
+                drawGraph();
+            }
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            isDragging = false;
+            initialPinchDistance = null; // Reset pinch state
+            lastTouchX = null;
+            lastTouchY = null;
+        });
+
+        /**
+         * Calculates the distance between two touch points.
+         * @param {TouchList} touches - The list of touch points.
+         * @returns {number} The distance between the first two touch points.
+         */
+        function getPinchDistance(touches) {
+            const dx = touches[0].clientX - touches[1].clientX;
+            const dy = touches[0].clientY - touches[1].clientY;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
 
         // Handle window resize to make the canvas responsive
         window.addEventListener('resize', () => {
